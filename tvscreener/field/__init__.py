@@ -779,6 +779,7 @@ class Market(Enum):
     SPAIN = "spain"
     RUSSIA = "russia"
     AUSTRALIA = "australia"
+    AUSTRIA = "austria"
     BRAZIL = "brazil"
     JAPAN = "japan"
     NEWZEALAND = "newzealand"
@@ -789,6 +790,7 @@ class Market(Enum):
     NETHERLANDS = "netherlands"
     BELGIUM = "belgium"
     PORTUGAL = "portugal"
+    IRELAND = "ireland"
     FRANCE = "france"
     MEXICO = "mexico"
     CANADA = "canada"
@@ -899,6 +901,9 @@ class IndexSymbol(Enum):
     SP100 = ("SP;OEX", "S&P 100")
     SP_MIDCAP_400 = ("SP;MID", "S&P MidCap 400")
     MINI_RUSSELL_2000 = ("CBOEFTSE;MRUT", "Mini-Russell 2000")
+
+    # European Indices
+    STOXX_600 = ("TVC;SXXP", "STOXX Europe 600")
 
     # S&P 500 Sectors
     SP500_ENERGY = ("SP;SPN", "S&P 500 Energy")

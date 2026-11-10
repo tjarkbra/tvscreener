@@ -18,8 +18,8 @@
 [![Code Generator](https://img.shields.io/badge/Try%20it-Code%20Generator-2962ff?style=for-the-badge&logo=python&logoColor=white)](https://deepentropy.github.io/tvscreener/)
 
 The Code Generator lets you:
-- Select from 6 screener types (Stock, Crypto, Forex, Bond, Futures, Coin)
-- Build filters visually with 13,000+ fields
+- Select from 10 screener types (Stock, ETF, Crypto, Forex, Bond, Government Bond, Futures, Coin, Index, Economics)
+- Build filters visually with 13,000+ fields, combined with AND / OR
 - Generate ready-to-use Python code
 - Copy and run in your environment
 
@@ -35,82 +35,15 @@ Get the results as a Pandas Dataframe
 
 **This is an unofficial, third-party library and is not affiliated with, endorsed by, or connected to TradingView™ in any way.** TradingView™ is a trademark of TradingView™, Inc. This independent project provides a Python interface to publicly available data from TradingView's screener. Use of this library is at your own risk and subject to TradingView's terms of service.
 
-# What's New in v0.2.0
-
-**MCP Server Integration** - This release adds Model Context Protocol (MCP) support, enabling AI assistants like Claude to query market data directly.
-
-### MCP Server for AI Assistants
-
-```bash
-# Install with MCP support
-pip install tvscreener[mcp]
-
-# Run MCP server
-tvscreener-mcp
-
-# Register with Claude Code
-claude mcp add tvscreener -- tvscreener-mcp
-```
-
-**MCP Tools:**
-- `discover_fields` - Search 3500+ available fields by keyword
-- `custom_query` - Flexible queries with any fields and filters
-- `search_stocks` / `search_crypto` / `search_forex` - Simplified screeners
-- `get_top_movers` - Get top gainers/losers
-
----
-
-# What's New in v0.1.0
-
-**Major API Enhancement Release** - This release significantly expands the library with new screeners, 13,000+ fields, and a more intuitive API.
-
-### New Screeners
-- **BondScreener** - Query government and corporate bonds
-- **FuturesScreener** - Query futures contracts
-- **CoinScreener** - Query coins from CEX and DEX exchanges
-
-### Expanded Field Coverage
-- **13,000+ fields** across all screener types (up from ~300)
-- Complete technical indicator coverage with all time intervals
-- Fields organized by category with search and discovery methods
-
-### Pythonic Comparison Syntax
-```python
-from tvscreener import StockScreener, StockField
-
-ss = StockScreener()
-ss.where(StockField.PRICE > 50)
-ss.where(StockField.VOLUME >= 1_000_000)
-ss.where(StockField.MARKET_CAPITALIZATION.between(1e9, 50e9))
-ss.where(StockField.SECTOR.isin(['Technology', 'Healthcare']))
-df = ss.get()
-```
-
-### Fluent API
-```python
-# Chain methods for cleaner code
-ss = StockScreener()
-ss.select(StockField.NAME, StockField.PRICE, StockField.CHANGE_PERCENT)
-ss.where(StockField.PRICE > 100)
-df = ss.get()
-```
-
-### Field Presets
-```python
-from tvscreener import StockScreener, STOCK_VALUATION_FIELDS, STOCK_DIVIDEND_FIELDS
-
-ss = StockScreener()
-ss.specific_fields = STOCK_VALUATION_FIELDS + STOCK_DIVIDEND_FIELDS
-```
-
-### Type-Safe Validation
-The library now validates that you're using the correct field types with each screener, catching errors early.
-
----
-
 # Main Features
 
-- Query **Stock**, **Forex**, **Crypto**, **Bond**, **Futures**, and **Coin** Screeners
+- Query **Stock**, **ETF**, **Forex**, **Crypto**, **Bond**, **Government Bond**, **Futures**, **Coin**, **Option**, **Index** and **Economics** Screeners
+- **OR / nested filters** with `|` and `&`, and operators such as `has()`, `above_pct()`, `in_day_range()`
+- **TradingView presets** (gainers, losers, all-time highs...) and **earnings, dividend, IPO and economic calendars**
+- **Financial statements**: about 20 years of annual and 8 years of quarterly income statement, balance sheet and cash flow
+- **Real-time quotes** pushed by TradingView, recent dividends, earnings and splits, and **seasonals**
+- **News** with filters, **filings and earnings call transcripts**
+- **Yield curves and matrix**, futures forward curves, IV term structure and smile, symbol search, peers and single-symbol lookups
 - All the **fields available**: 13,000+ fields across all screener types
 - **Any time interval** (`no need to be a registered user` - 1D, 5m, 1h, etc.)
 - **Fluent API** with `select()` and `where()` methods for cleaner code
@@ -121,6 +54,10 @@ The library now validates that you're using the correct field types with each sc
 - Get the results as a Pandas Dataframe
 - **Styled output** with TradingView-like colors and formatting
 - **Streaming/Auto-update** - continuously fetch data at specified intervals
+- **MCP server** for AI assistants: `pip install tvscreener[mcp]`, then `claude mcp add tvscreener -- tvscreener-mcp`
+
+> [!TIP]
+> **New in 0.8:** financial statements, real-time quotes, economic calendar, news, filings and earnings call transcripts, also as MCP tools. See [Financials and Events](https://deepentropy.github.io/tvscreener/docs/guide/fundamentals/) and [News and Filings](https://deepentropy.github.io/tvscreener/docs/guide/news-documents/).
 
 ## Installation
 
@@ -171,6 +108,78 @@ df = futs.get()
 # Coin Screener (NEW) - CEX and DEX coins
 coins = tvs.CoinScreener()
 df = coins.get()
+
+# Option Screener - option chains with greeks and IV (underlying required)
+opts = tvs.OptionScreener("NASDAQ:AAPL")
+opts.where(tvs.OptionField.DELTA.between(0.4, 0.6))
+df = opts.get()
+
+# Implied volatility term structure
+df = tvs.get_iv_term_structure("NASDAQ:AAPL")
+
+# ETF Screener - ETFs sorted by assets under management
+etfs = tvs.ETFScreener()
+etfs.where(tvs.StockField.EXPENSE_RATIO < 0.1)
+df = etfs.get()
+
+# Index Screener - indices, CFDs, crypto market caps
+df = tvs.IndexScreener().main_indices().get()
+
+# Economics Screener - 15,000+ economic indicators
+es = tvs.EconomicsScreener()
+es.where(tvs.EconomicsField.COUNTRY_CODE == 'US')
+df = es.get()
+
+# Government bond yield curve
+df = tvs.get_yield_curve("US")
+```
+
+### OR Filters and Presets
+
+```python
+ss = tvs.StockScreener()
+ss.where((tvs.StockField.SECTOR == 'Finance') | (tvs.StockField.SECTOR == 'Utilities'))
+ss.where(tvs.StockField.PRICE.above_pct(tvs.StockField.SIMPLE_MOVING_AVERAGE_50, 5))
+df = ss.get()
+
+# TradingView's own screens
+df = tvs.StockScreener().set_preset(tvs.Preset.GAINERS).get()
+```
+
+### Calendars
+
+```python
+earnings = tvs.get_earnings_calendar("2026-10-12", "2026-10-18")
+dividends = tvs.get_dividends_calendar("2026-10-12", "2026-10-18")
+ipos = tvs.get_ipo_calendar("2026-10-01", "2026-10-31", markets=tvs.Market.ALL)
+macro = tvs.get_economic_calendar("2026-10-12", "2026-10-18", countries=["US", "EU"], importance="high")
+```
+
+### Financials, Events and Real-Time Quotes
+
+```python
+income = tvs.get_financials("NASDAQ:AAPL", "income", "FY")       # ~20 fiscal years
+balance = tvs.get_financials("NASDAQ:AAPL", "balance_sheet", "FQ")
+events = tvs.get_corporate_events("NASDAQ:AAPL")                  # dividends, earnings, splits
+seasonals = tvs.get_seasonals("NASDAQ:AAPL")                      # monthly returns by year
+
+for quote in tvs.stream_quotes(["NASDAQ:AAPL", "BINANCE:BTCUSDT"], duration=60):
+    print(quote["symbol"], quote.get("price"))
+```
+
+### News, Filings and Market Helpers
+
+```python
+news = tvs.get_news("NASDAQ:AAPL", corp_activity="insider_trading")
+text = tvs.get_article(news["id"].iloc[0])
+docs = tvs.get_documents("NASDAQ:AAPL", category="call_transcript")
+transcript = tvs.get_document(docs["transcript_id"].iloc[0])
+
+tvs.search_symbols("US0378331005")             # ISIN -> NASDAQ:AAPL and other listings
+tvs.get_peers("NASDAQ:AAPL")
+tvs.get_forward_curve("NYMEX:CL")
+tvs.get_yield_matrix(["US", "DE", "JP"])
+tvs.get_volatility_smile("NASDAQ:AAPL", "2026-11-13")
 ```
 
 ### Fluent API
@@ -349,6 +358,9 @@ for df in ss.stream(interval=30, max_iterations=10):
 | [Filtering](https://deepentropy.github.io/tvscreener/docs/guide/filtering/) | Complete filtering reference |
 | [Stock Screening](https://deepentropy.github.io/tvscreener/docs/examples/stock-screening/) | Value, momentum, dividend strategies |
 | [Technical Analysis](https://deepentropy.github.io/tvscreener/docs/examples/technical-analysis/) | RSI, MACD, multi-timeframe |
+| [Financials and Events](https://deepentropy.github.io/tvscreener/docs/guide/fundamentals/) | Statements, dividends, earnings, seasonals |
+| [News and Filings](https://deepentropy.github.io/tvscreener/docs/guide/news-documents/) | Filtered news, 10-Q/10-K, call transcripts |
+| [Streaming](https://deepentropy.github.io/tvscreener/docs/guide/streaming/) | Screener refreshes and real-time quotes |
 | [API Reference](https://deepentropy.github.io/tvscreener/docs/api/screeners/) | Screeners, Fields, Enums |
 
 ### Jupyter Notebooks

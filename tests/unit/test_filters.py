@@ -242,6 +242,38 @@ class TestStockFilters(unittest.TestCase):
         self.assertEqual(Rating.UNKNOWN, Rating.find(1.5))
         self.assertEqual(Rating.UNKNOWN, Rating.find(None))
 
+    def test_rating_find_inside_bands(self):
+        self.assertEqual(Rating.STRONG_BUY, Rating.find(0.75))
+        self.assertEqual(Rating.BUY, Rating.find(0.3))
+        self.assertEqual(Rating.NEUTRAL, Rating.find(0.0))
+        self.assertEqual(Rating.SELL, Rating.find(-0.3))
+        self.assertEqual(Rating.STRONG_SELL, Rating.find(-0.75))
+
+    def test_rating_find_at_boundaries(self):
+        """Bands are open at the edge facing Neutral; Neutral is closed."""
+        # TradingView: (0.5 < v <= 1.0] Strong Buy, (0.1 < v <= 0.5] Buy,
+        # [-0.1 <= v <= 0.1] Neutral, [-0.5 <= v < -0.1] Sell.
+        self.assertEqual(Rating.BUY, Rating.find(0.5))
+        self.assertEqual(Rating.NEUTRAL, Rating.find(0.1))
+        self.assertEqual(Rating.NEUTRAL, Rating.find(-0.1))
+        self.assertEqual(Rating.SELL, Rating.find(-0.5))
+
+    def test_rating_find_at_extremes(self):
+        self.assertEqual(Rating.STRONG_BUY, Rating.find(1.0))
+        self.assertEqual(Rating.STRONG_SELL, Rating.find(-1.0))
+
+    def test_rating_find_out_of_range(self):
+        self.assertEqual(Rating.UNKNOWN, Rating.find(1.5))
+        self.assertEqual(Rating.UNKNOWN, Rating.find(-1.5))
+
+    def test_rating_bands_do_not_overlap(self):
+        """No value may match more than one band."""
+        bands = [r for r in Rating if r is not Rating.UNKNOWN]
+        for step in range(-100, 101):
+            value = step / 100
+            matches = [r.name for r in bands if value in r]
+            self.assertEqual(1, len(matches), f"{value} matched {matches}")
+
     def test_rating_names(self):
         self.assertIn("STRONG_BUY", Rating.names())
 

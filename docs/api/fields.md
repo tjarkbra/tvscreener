@@ -12,12 +12,17 @@ Field enums provide type-safe access to screener data.
 | `BondField` | `BondScreener` | ~201 |
 | `FuturesField` | `FuturesScreener` | ~393 |
 | `CoinField` | `CoinScreener` | ~3,026 |
+| `OptionField` | `OptionScreener` | 28 |
+| `EconomicsField` | `EconomicsScreener` | ~37 |
+| `IndexField` | `IndexScreener` | ~358 |
+| `GovernmentBondField` | `GovernmentBondScreener` | ~129 |
 
 ## Import
 
 ```python
 from tvscreener import StockField
-from tvscreener.field import StockField, CryptoField, ForexField
+from tvscreener.field.stock import StockField
+from tvscreener.field.crypto import CryptoField
 ```
 
 ## Comparison Operators
@@ -45,7 +50,7 @@ StockField.PRICE.not_between(50, 200)   # Value outside range
 ### List Methods
 
 ```python
-StockField.SECTOR.isin(['Technology', 'Healthcare'])
+StockField.SECTOR.isin(['Electronic Technology', 'Health Technology'])
 StockField.SECTOR.not_in(['Finance', 'Utilities'])
 ```
 
@@ -133,23 +138,25 @@ for field in matches[:10]:
 Get grouped fields:
 
 ```python
+from tvscreener import get_preset
+
 # Technical indicators
 technicals = StockField.technicals()
 
 # Oscillators
-oscillators = StockField.oscillators()
+oscillators = get_preset('stock_oscillators')
 
 # Moving averages
-mas = StockField.moving_averages()
+mas = get_preset('stock_moving_averages')
 
 # Valuations
-valuations = StockField.valuations()
+valuations = get_preset('stock_valuation')
 
 # Dividends
-dividends = StockField.dividends()
+dividends = get_preset('stock_dividend')
 
 # Performance
-performance = StockField.performance()
+performance = get_preset('stock_performance')
 
 # Recommendations
 recommendations = StockField.recommendations()

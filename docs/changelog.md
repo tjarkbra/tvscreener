@@ -2,6 +2,215 @@
 
 All notable changes to tvscreener.
 
+## [0.8.2] - 01/11/2026
+
+### Fixed
+
+- **`get_financials` no longer crashes with `RecursionError` or drops items** (#74). It now uses the company's own layout, as reported by TradingView (`fund_view_mode`). Before, many balance sheets (e.g. NVDA, KO, XOM) selected the `other` layout, which lists an item as its own parent.
+- **`get_financials` no longer returns an empty result without explanation** (#73). `balance_sheet` with `TTM` raises `ValueError`, because TradingView has no such fields. When a company has no data for the statement and period, a warning is issued. TradingView keeps a `TTM` history for a few items only, and for no statistics: this is now documented.
+
+## [0.8.1] - 15/10/2026
+
+### Added
+
+- **MCP tools for the 0.8.0 features**
+  - 12 new tools: `financials`, `corporate_events`, `seasonals`, `quotes`, `news`, `company_documents`, `earnings_calls`, `read_text`, `find_symbols`, `peers`, `forward_curve`, `volatility_smile`
+  - `get_calendar` accepts `kind="economic"`, with `countries` and `importance`
+  - `yield_curve` accepts several countries (or `ALL`) and `tenors`, and then returns a matrix
+
+### Fixed
+
+- **MCP `custom_query` no longer ignores invalid input.** Unknown filter keys (e.g. `operator` instead of `op`), fields, operators, `sort_by` fields and asset types now return an error. A missing `op` or `value` also returns an error. Before, a misspelled key quietly became `>=`, and unknown parts were dropped.
+
+## [0.8.0] - 15/10/2026
+
+### Added
+
+- **Financial statements**: `get_financials(symbol, statement, period)`
+  - Income statement, balance sheet, cash flow and statistics, by fiscal year, quarter, half-year or TTM
+  - About 20 years and 32 quarters for large companies
+  - TradingView's layout for each company type (industrial, bank, insurer)
+  - `get_fundamentals_config()` returns the field catalogue
+- **Real-time quotes**: `stream_quotes(symbols)` yields each quote change pushed by TradingView, including pre/after-market prices and the delay (`update_mode`)
+- **Corporate events and seasonals**
+  - `get_corporate_events(symbol)`: recent dividends, earnings (actual vs estimate, next release) and splits
+  - `get_seasonals(symbol)`: monthly returns by year
+- **Economic calendar**: `get_economic_calendar(start, end, countries, importance)` with actual, forecast and previous values
+- **Filings and transcripts**
+  - `get_documents(symbol)`: 10-Q, 10-K, earnings releases, transcripts
+  - `get_document(id)`: transcript or summary text
+  - `get_earnings_calls(symbol)`: call dates, live transcript and recording links
+- **News**
+  - `get_news()` filters: `provider`, `market`, `sector`, `corp_activity` (insider trading, ESG, analyst ratings...), `country`, `priority`
+  - New `id` column; `get_article(id)` reads TradingView's news API
+- **Market helpers**
+  - `search_symbols(text, type, exchange, country)`: search by ticker, name, ISIN or CUSIP
+  - `get_peers(symbol)`: largest companies of the same industry
+  - `get_forward_curve(root)`: futures term structure
+  - `get_yield_matrix(countries, tenors)`: government yields of several countries by tenor
+  - `get_volatility_smile(symbol, expiration)`: implied volatility by strike or moneyness
+- New dependency: `websocket-client`. It is used by `get_financials`, `stream_quotes`, `get_corporate_events` and `get_seasonals`
+
+### Changed
+
+- `get_article()` takes a story `id` (news API) or a `story_path` (web page). The argument is renamed from `story_path` to `story`
+- Article text keeps paragraph breaks, and symbol and link text
+
+## [0.7.0] - 15/10/2026
+
+### Added
+
+- **OR and nested filter logic** (#62)
+  - Combine conditions with `|` and `&`: `ss.where((StockField.SECTOR == 'Finance') | (StockField.SECTOR == 'Utilities'))`
+  - Sent as TradingView's `filter2` tree; new `ConditionGroup` class
+  - MCP `custom_query` accepts `{"or": [...]}` / `{"and": [...]}` groups
+- **New filter operations** (#63)
+  - `has()`, `has_none_of()` for set fields such as `typespecs`
+  - `is_empty()`, `not_empty()`
+  - `in_day_range(start, end)` for dates relative to today
+  - `above_pct()`, `below_pct()`, `within_pct()`, `not_within_pct()` to compare with a percentage of another field or a number
+  - Available in the MCP `custom_query` tool
+- **Scanner helpers** (#72)
+  - `get_symbol(symbol, *fields)`: any fields of one symbol
+  - `get_enum_values(*ids)`: valid values of enumerable fields (sector, exchange, ETF issuer...)
+  - `get_metainfo(market)` and `Screener.metainfo()`: field catalogue of a scanner market
+- **Field enums regenerated from TradingView's metainfo** (#64)
+  - New `scripts/generate_fields.py`: adds the fields that return data, marks the ones that never do as deprecated
+  - Stocks: analyst estimates (`*_ESTIMATE_FQ/FY/FH/NTM`), forward multiples (`PRICE_EARNINGS_FWD`...), IPO fields, `EARNINGS_FQ_H` / `REVENUES_FQ_H` history
+  - Coin: `FUNDING_RATE`, `OPEN_INTEREST`, open interest change and long/short liquidations (15m to 24h)
+  - Bond: durations, `CONVEXITY`, `DV_01`, Z/G/F spreads, YTM/YTW bid/ask, Moody's and Fitch ratings
+  - All price markets: 17 candlestick patterns, absolute performance (`PERF_*_ABS`)
+  - Deprecated fields warn when used and are left out of `select_all()`. Full lists: [Field Changes](field-changes.md)
+
+| Enum | Added | Deprecated |
+|------|-------|------------|
+| `StockField` | 129 | 26 |
+| `CryptoField` | 33 | 131 |
+| `ForexField` | 31 | 108 |
+| `BondField` | 29 | 34 |
+| `FuturesField` | 29 | 34 |
+| `CoinField` | 56 | 257 |
+| `EconomicsField` (new) | 37 | 0 |
+| `IndexField` (new) | 358 | 0 |
+| `GovernmentBondField` (new) | 129 | 0 |
+
+- **`ETFScreener`** (#69): ETFs and ETNs sorted by AUM; new `INDEX_TRACKED` and readable `*_NAME` ETF fields (`ASSET_CLASS_NAME`, `FOCUS_NAME`...)
+- **`EconomicsScreener`** (#66): 15,000+ economic indicators by country and `EconomicCategory`
+- **`IndexScreener`** (#67): stock indices, index/commodity CFDs and crypto market-cap indices
+- **`GovernmentBondScreener` and `get_yield_curve(country)`** (#68): benchmark government bond yields and prices by tenor
+- **`Field.match(pattern)`**: case-insensitive regex match on text fields
+- **Presets and calendars** (#70)
+  - `StockScreener.set_preset()` with the `Preset` enum (gainers, losers, most volatile, all-time high, oversold...)
+  - `get_earnings_calendar()`, `get_dividends_calendar()`, `get_ipo_calendar()` for a date range and markets
+- **`set_currency()`** (#71)
+  - Converts fundamentals (market cap, revenue, EPS...) to one currency: `ss.set_currency("eur")`
+  - Prices are not converted
+- **Code Generator: new operators and OR**
+  - Operators: has any of, has none of, % above, % below, within %, outside %, day range, has a value, is empty
+  - AND / OR toggle between filters; OR filters are grouped in one `where()` call
+
+### Fixed
+
+- **`StockField.DIVIDEND_YIELD_FY`** pointed to `dividend_yield_recent`, which returns no data; it now points to `DIVIDENDS_YIELD_FY`
+- **Docs**: coin examples used `CoinField.MARKET_CAP` / `VOLUME`, which return no data; they use `MARKET_CAP_CALC` / `N24H_VOL_CMC`
+- **`with_history()` rejected 26 indicators** (#65)
+  - `StockField` indicators such as `RSI2`, `STOCH_K_5_3_3`, `ADX_PLUS_DI_50` and `MOM_14` have previous-bar values in TradingView but raised `ValueError`
+
+### Changed
+
+- `StockScreener.set_markets()` returns the screener, so it can be chained
+- Filters on the same field are merged into one `in_range` filter only for the original comparison operations. The new operations are always kept as separate filters.
+
+---
+
+## [0.6.0] - 14/10/2026
+
+### Added
+
+- **`OptionScreener` and `OptionField`** (#53)
+  - Option chains from the TradingView options scanner, for one or more underlyings (`OptionScreener("NASDAQ:AAPL")`)
+  - Greeks (delta, gamma, theta, vega, rho), implied volatility (mid, bid, ask), theoretical price, bid/ask
+  - Expiration is returned as a datetime; expiration filters accept dates, ISO strings or `YYYYMMDD` integers
+- **`get_iv_term_structure(symbol)`** (#53)
+  - Implied volatility by time to expiration: one point per listed expiration and standard tenors (1w to 1y)
+
+---
+
+## [0.5.2] - 23/09/2026
+
+### Fixed
+
+- **`with_interval()` rejects fields that already have a time interval**
+  - Fields such as `StockField.EMA12_5` (`EMA12|5`) produced an invalid column like `EMA12|5|60`
+  - They now raise `ValueError`
+  - New `Field.accepts_interval()` tells if `with_interval()` can be applied
+
+### Changed
+
+- **Code Generator redesign**
+  - New layout and styling
+  - Searchable field picker for filters and sort; every field is reachable
+  - Search matches initials (`rsi`, `sma50`)
+  - Timeframe (`with_interval()`) for filters, columns and sort
+  - `not in list` operator (`not_in()`)
+  - Market selection for stocks (`set_markets()`); the market list now matches the `Market` enum
+
+---
+
+## [0.5.1] - 23/09/2026
+
+### Fixed
+
+- **`tvscreener-mcp` now works with mcp 2.x** (#60)
+  - mcp 2.x renamed `FastMCP` to `MCPServer`, which made the server crash at startup
+  - The server supports both mcp 1.x and 2.x
+
+---
+
+## [0.5.0] - 15/09/2026
+
+### Fixed
+
+- **`Rating.find()` now classifies boundary values correctly** (#57)
+  - `0.5` maps to Buy instead of Strong Buy
+  - `0.1` maps to Neutral instead of Buy
+  - Rating bands no longer overlap at their boundaries
+
+---
+
+## [0.4.1] - 2026
+
+### Fixed
+
+- **`with_interval()` and `with_history()` no longer crash `get()`** (#56, #57)
+  - `FieldWithInterval` and `FieldWithHistory` were missing `has_recommendation()`,
+    which `get_columns_to_request()` calls on every selected field
+  - Any `select()` using an interval or history wrapper raised `AttributeError`
+
+- **Historical offset now placed before the interval suffix**
+  - The auto-added 'Prev.' column built `RSI|1W[1]`, which TradingView
+    answers with `null`; the valid form is `RSI[1]|1W`
+  - Pre-baked interval fields (e.g. `ForexField.ADX_PLUS_DI_1_1`) are handled too
+  - `with_history()` no longer stacks a second offset, which previously
+    produced a duplicate `RSI[1][1]` column
+
+- **`select_all()` works on every screener**
+  - Forex, Crypto, Bond, Futures and Coin raised
+    `ValueError: N columns passed, passed data had N+1 columns`
+  - Two name collisions dropped a header entry: those enums define a field
+    named `symbol` that clashed with the injected ticker column, and some
+    distinct fields share one label (`High.All` and `all_time_high` are both
+    'All Time High')
+  - Duplicate names now get a `.1`, `.2` suffix, matching `pandas.read_csv`
+
+### Changed
+
+- `test_current_trading_day` no longer asserts a fixed row count. The
+  `active_symbol` filter returns 0 rows outside market hours, so the test
+  failed whenever it ran off-session.
+
+---
+
 ## [0.2.1] - 2026
 
 ### Fixed

@@ -1,5 +1,6 @@
 import json
 import time
+import warnings
 from typing import Iterator, Callable, Optional, Union, List
 
 import pandas as pd
@@ -11,7 +12,7 @@ from tvscreener.field import Field, Market, IndexSymbol
 from tvscreener.field.crypto import CryptoField
 from tvscreener.field.forex import ForexField
 from tvscreener.field.stock import StockField
-from tvscreener.filter import FilterOperator, Filter, ExtraFilter
+from tvscreener.filter import FilterOperator, Filter, ExtraFilter, ConditionGroup
 from tvscreener.util import get_columns_to_request, is_status_code_ok
 
 # Configuration constants
@@ -23,6 +24,15 @@ DEFAULT_SORT_CRYPTO = CryptoField.VOLUME_24H_IN_USD
 DEFAULT_SORT_FOREX = ForexField.NAME
 REQUEST_TIMEOUT = 30  # seconds
 MIN_STREAM_INTERVAL = 1.0  # minimum interval for streaming to avoid rate limiting
+
+# Filters on the same field with these operations are merged into one IN_RANGE
+# filter. Other operations (has, above%, empty...) are always kept separate.
+MERGEABLE_OPERATIONS = {
+    FilterOperator.BELOW, FilterOperator.BELOW_OR_EQUAL, FilterOperator.ABOVE,
+    FilterOperator.ABOVE_OR_EQUAL, FilterOperator.CROSSES, FilterOperator.CROSSES_UP,
+    FilterOperator.CROSSES_DOWN, FilterOperator.IN_RANGE, FilterOperator.NOT_IN_RANGE,
+    FilterOperator.EQUAL, FilterOperator.NOT_EQUAL, FilterOperator.MATCH,
+}
 
 # HTTP headers for TradingView API requests
 REQUEST_HEADERS = {
@@ -41,18 +51,60 @@ default_sort_crypto = DEFAULT_SORT_CRYPTO
 default_sort_forex = DEFAULT_SORT_FOREX
 
 
+def _warn_deprecated(fields):
+    for field in fields:
+        if getattr(field, 'deprecated', False):
+            warnings.warn(
+                f"{field.name} ({field.field_name}) is deprecated: TradingView returns no data for it",
+                DeprecationWarning, stacklevel=3,
+            )
+
+
+def _uniquify(names: list) -> list:
+    """
+    Make a list of column names unique, preserving order and first occurrence.
+
+    Needed because a single response can carry two columns wanting the same
+    name: TradingView has distinct fields sharing one label (e.g. 'High.All'
+    and 'all_time_high' are both labelled 'All Time High'), and the injected
+    ticker column clashes with a requested field named 'symbol' (Forex,
+    Crypto, Bond, Futures and Coin all define one). Pandas returns several
+    columns for one duplicated name, so repeats get a '.1', '.2', ... suffix,
+    the convention pandas.read_csv uses.
+
+    :param names: Column names in response order
+    :return: Same length list with every name unique
+    """
+    seen = set()
+    unique = []
+    for name in names:
+        candidate = name
+        suffix = 0
+        while candidate in seen:
+            suffix += 1
+            candidate = f"{name}.{suffix}"
+        seen.add(candidate)
+        unique.append(candidate)
+    return unique
+
+
 class ScreenerDataFrame(pd.DataFrame):
     def __init__(self, data, columns: dict, *args, **kwargs):
-        # Add the extra received columns
-        columns = {"symbol": "Symbol", **columns}
-        super().__init__(data, columns=list(columns.values()), *args, **kwargs)
+        # Every row starts with the exchange-prefixed ticker, which the API
+        # returns outside of the requested columns. One name per returned
+        # value is required, otherwise the data and the header get out of
+        # step and pandas raises a column count mismatch.
+        keys = _uniquify(["symbol"] + list(columns.keys()))
+        labels = _uniquify(["Symbol"] + list(columns.values()))
+        columns = dict(zip(keys, labels))
+        super().__init__(data, columns=labels, *args, **kwargs)
 
         # Reorder columns - only include first_columns that exist in the request
         first_columns = ['symbol', 'name', 'description']
-        ordered_columns = {k: columns.get(k) for k in first_columns if k in columns}
+        ordered_columns = {k: columns[k] for k in first_columns if k in columns}
         ordered_columns.update({k: v for k, v in columns.items() if k not in first_columns})
         self.attrs['original_columns'] = ordered_columns
-        self._update_inplace(self[ordered_columns.values()])
+        self._update_inplace(self[list(ordered_columns.values())])
 
     def set_technical_columns(self, only: bool = False):
         if only:
@@ -71,6 +123,7 @@ class Screener:
         self.sort = None
         self.url = None
         self.filters = []
+        self.filter_groups = []
         self.options = {}
         self.symbols = None
         self.misc = {}
@@ -143,12 +196,18 @@ class Screener:
                 f"Use {self._field_type.__name__} fields with {type(self).__name__}."
             )
 
+    def _prepare_filter_values(self, field, values):
+        """Hook for subclasses to convert filter values (e.g. dates) before they are sent."""
+        return values
+
     def add_filter(self, filter_type: Field | ExtraFilter, operation: FilterOperator, values: Enum or str):
         self._validate_field_type(filter_type)
-        filter_ = Filter(filter_type, operation, values)
+        _warn_deprecated([filter_type])
+        filter_ = Filter(filter_type, operation, self._prepare_filter_values(filter_type, values))
         # Case where the filter already exists, and we want to add more values
         existing_filter = self._get_filter(filter_.field)
-        if existing_filter:
+        if (existing_filter and existing_filter.operation in MERGEABLE_OPERATIONS
+                and filter_.operation in MERGEABLE_OPERATIONS):
             self._merge_filters(existing_filter, filter_)
         else:
             self._add_new_filter(filter_)
@@ -167,7 +226,10 @@ class Screener:
         2. **Legacy syntax** (still supported):
             >>> ss.where(StockField.PRICE, FilterOperator.ABOVE, 100)
 
-        :param condition_or_field: Either a FieldCondition (from comparison) or a Field
+        3. **AND / OR groups**, combined with ``&`` and ``|`` (parentheses are required):
+            >>> ss.where((StockField.SECTOR == 'Finance') | (StockField.SECTOR == 'Utilities'))
+
+        :param condition_or_field: A FieldCondition, a ConditionGroup or a Field (legacy syntax)
         :param operation: Filter operation (only for legacy syntax)
         :param value: Value to compare against (only for legacy syntax)
         :return: self for method chaining
@@ -181,7 +243,12 @@ class Screener:
         """
         from tvscreener.filter import FieldCondition
 
-        if isinstance(condition_or_field, FieldCondition):
+        if isinstance(condition_or_field, ConditionGroup):
+            for condition in condition_or_field.conditions():
+                self._validate_field_type(condition.field)
+            _warn_deprecated([c.field for c in condition_or_field.conditions()])
+            self.filter_groups.append(condition_or_field)
+        elif isinstance(condition_or_field, FieldCondition):
             # New Pythonic syntax: ss.where(StockField.PRICE > 100)
             self.add_filter(condition_or_field.field, condition_or_field.operation, condition_or_field.value)
         else:
@@ -200,6 +267,7 @@ class Screener:
             >>> ss = StockScreener()
             >>> ss.select(StockField.NAME, StockField.PRICE, StockField.VOLUME)
         """
+        _warn_deprecated(fields)
         self.specific_fields = list(fields)
         return self
 
@@ -213,10 +281,45 @@ class Screener:
             >>> ss = StockScreener()
             >>> ss.select_all()
             >>> df = ss.get()  # Returns all ~3000+ stock fields
+
+        Deprecated fields (no data from TradingView) are left out.
         """
         if self._field_type is None:
             raise ValueError("Cannot select all fields: screener has no field type defined")
-        self.specific_fields = list(self._field_type)
+        self.specific_fields = [f for f in self._field_type if not f.deprecated]
+        return self
+
+    def metainfo(self) -> pd.DataFrame:
+        """
+        Get the field catalogue of this screener's scanner market.
+
+        :return: DataFrame with columns: name, type, values
+
+        Example:
+            >>> StockScreener().metainfo()
+        """
+        from tvscreener.scanner import get_metainfo
+        return get_metainfo(self.url.rstrip('/').split('/')[-2])
+
+    def set_currency(self, currency: str) -> 'Screener':
+        """
+        Convert fundamental values (market cap, revenue, EPS, enterprise value...) to one currency.
+
+        Prices (close, open...) stay in the symbol's currency. ``fundamental_currency_code``
+        shows the currency used. Without this setting, StockScreener (global scanner)
+        returns fundamentals in USD; single-market scanners use the local currency.
+
+        :param currency: ISO currency code, e.g. "usd", "eur", "jpy"
+        :return: self for method chaining
+
+        Example:
+            >>> ss = StockScreener().set_markets(Market.JAPAN, Market.GERMANY).set_currency("eur")
+        """
+        if not (isinstance(currency, str) and len(currency) == 3 and currency.isalpha()):
+            raise ValueError(f"currency must be a 3-letter ISO code such as 'usd', got {currency!r}")
+        conversion = dict(self.misc.get("price_conversion", {}))
+        conversion["to_currency"] = currency.lower()
+        self.add_misc("price_conversion", conversion)
         return self
 
     def add_option(self, key, value):
@@ -271,7 +374,19 @@ class Screener:
             "columns": requested_columns_,
             **self.misc
         }
+        if self.filter_groups:
+            # Several where() groups are combined with AND; plain filters are ANDed by the API
+            if len(self.filter_groups) == 1:
+                payload["filter2"] = self.filter_groups[0].to_dict(self._prepare_filter_values)
+            else:
+                payload["filter2"] = {"operator": "and", "operands": [
+                    {"operation": group.to_dict(self._prepare_filter_values)} for group in self.filter_groups
+                ]}
         return payload
+
+    def _request_url(self) -> str:
+        """URL of the scan request; subclasses can route to another scanner market."""
+        return self.url
 
     def get(self, print_request=False):
         """
@@ -287,16 +402,17 @@ class Screener:
 
         payload = self._build_payload(list(columns.keys()))
         payload_json = json.dumps(payload, indent=4)
+        url = self._request_url()
 
         if print_request:
-            print(f"Request: {self.url}")
+            print(f"Request: {url}")
             print("Payload:")
             print(payload_json)
 
         try:
             # Fixed: Add timeout to prevent hanging indefinitely
             response = requests.post(
-                self.url,
+                url,
                 data=payload_json,
                 timeout=REQUEST_TIMEOUT,
                 headers=REQUEST_HEADERS
@@ -309,7 +425,7 @@ class Screener:
                 raise MalformedRequestException(
                     response.status_code,
                     response.text,
-                    self.url,
+                    url,
                     payload_json
                 )
 
@@ -317,14 +433,14 @@ class Screener:
             raise MalformedRequestException(
                 408,  # Request Timeout
                 f"Request timed out after {REQUEST_TIMEOUT} seconds",
-                self.url,
+                url,
                 payload_json
             )
         except requests.RequestException as e:
             raise MalformedRequestException(
                 0,  # Unknown status code
                 str(e),
-                self.url,
+                url,
                 payload_json
             )
 

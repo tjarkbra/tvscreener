@@ -15,8 +15,14 @@ from tvscreener.field.forex import ForexField
 from tvscreener.field.bond import BondField
 from tvscreener.field.futures import FuturesField
 from tvscreener.field.coin import CoinField
-from tvscreener.field import IndexSymbol
+from tvscreener.field.economics import EconomicsField
+from tvscreener.field.index import IndexField
+from tvscreener.field.government_bond import GovernmentBondField
+from tvscreener.field import IndexSymbol, Market
+from tvscreener import StockScreener, CryptoScreener, ForexScreener, BondScreener, FuturesScreener, CoinScreener, \
+    ETFScreener, EconomicsScreener, IndexScreener, GovernmentBondScreener
 from tvscreener.filter import FilterOperator
+from tvscreener.core.base import DEFAULT_MARKET
 
 # Screener configurations
 SCREENERS = {
@@ -25,48 +31,82 @@ SCREENERS = {
         "class": "StockScreener",
         "fieldClass": "StockField",
         "fieldEnum": StockField,
+        "screener": StockScreener,
         "hasIndex": True,
-        "hasMarket": True,
     },
     "crypto": {
         "name": "Crypto Screener",
         "class": "CryptoScreener",
         "fieldClass": "CryptoField",
         "fieldEnum": CryptoField,
+        "screener": CryptoScreener,
         "hasIndex": False,
-        "hasMarket": False,
     },
     "forex": {
         "name": "Forex Screener",
         "class": "ForexScreener",
         "fieldClass": "ForexField",
         "fieldEnum": ForexField,
+        "screener": ForexScreener,
         "hasIndex": False,
-        "hasMarket": False,
     },
     "bond": {
         "name": "Bond Screener",
         "class": "BondScreener",
         "fieldClass": "BondField",
         "fieldEnum": BondField,
+        "screener": BondScreener,
         "hasIndex": False,
-        "hasMarket": True,
     },
     "futures": {
         "name": "Futures Screener",
         "class": "FuturesScreener",
         "fieldClass": "FuturesField",
         "fieldEnum": FuturesField,
+        "screener": FuturesScreener,
         "hasIndex": False,
-        "hasMarket": False,
     },
     "coin": {
         "name": "Coin Screener (CEX/DEX)",
         "class": "CoinScreener",
         "fieldClass": "CoinField",
         "fieldEnum": CoinField,
+        "screener": CoinScreener,
         "hasIndex": False,
-        "hasMarket": False,
+    },
+    "etf": {
+        "name": "ETF Screener",
+        "class": "ETFScreener",
+        "fieldClass": "StockField",
+        "fieldEnum": StockField,
+        "screener": ETFScreener,
+        "hasIndex": False,
+        # Same fields as the stock screener; shared in field-data.js instead of duplicated
+        "fieldsFrom": "stock",
+    },
+    "index": {
+        "name": "Index Screener",
+        "class": "IndexScreener",
+        "fieldClass": "IndexField",
+        "fieldEnum": IndexField,
+        "screener": IndexScreener,
+        "hasIndex": False,
+    },
+    "government_bond": {
+        "name": "Government Bond Screener",
+        "class": "GovernmentBondScreener",
+        "fieldClass": "GovernmentBondField",
+        "fieldEnum": GovernmentBondField,
+        "screener": GovernmentBondScreener,
+        "hasIndex": False,
+    },
+    "economics": {
+        "name": "Economics Screener",
+        "class": "EconomicsScreener",
+        "fieldClass": "EconomicsField",
+        "fieldEnum": EconomicsField,
+        "screener": EconomicsScreener,
+        "hasIndex": False,
     },
 }
 
@@ -212,13 +252,17 @@ def export_fields(field_enum) -> list:
     """Export all field enum members with their metadata."""
     fields = []
     for field in field_enum:
+        # Deprecated fields return no data from TradingView
+        if getattr(field, 'deprecated', False):
+            continue
         try:
             fields.append({
                 "name": field.name,
                 "label": field.label,
                 "fieldName": field.field_name,
                 "format": field.format,
-                "interval": getattr(field, 'interval', False),
+                # True only when with_interval() can be applied to the field
+                "interval": field.accepts_interval(),
                 "historical": getattr(field, 'historical', False),
                 "category": get_field_category(field.name)
             })
@@ -254,23 +298,25 @@ def export_index_symbols() -> list:
     return indices
 
 
+# Display names for Market members whose name is not a readable country name
+MARKET_LABELS = {
+    "ALL": "All markets",
+    "AMERICA": "United States",
+    "UK": "United Kingdom",
+    "UAE": "United Arab Emirates",
+    "KSA": "Saudi Arabia",
+    "RSA": "South Africa",
+    "HONGKONG": "Hong Kong",
+    "NEWZEALAND": "New Zealand",
+    "SRILANKA": "Sri Lanka",
+}
+
+
 def export_markets() -> list:
     """Export Market enum values."""
-    return [
-        {"name": "AMERICA", "label": "United States"},
-        {"name": "UK", "label": "United Kingdom"},
-        {"name": "GERMANY", "label": "Germany"},
-        {"name": "FRANCE", "label": "France"},
-        {"name": "JAPAN", "label": "Japan"},
-        {"name": "CANADA", "label": "Canada"},
-        {"name": "AUSTRALIA", "label": "Australia"},
-        {"name": "INDIA", "label": "India"},
-        {"name": "BRAZIL", "label": "Brazil"},
-        {"name": "CHINA", "label": "China"},
-        {"name": "HONG_KONG", "label": "Hong Kong"},
-        {"name": "SWITZERLAND", "label": "Switzerland"},
-        {"name": "ALL", "label": "All Markets"},
-    ]
+    markets = [{"name": m.name, "label": MARKET_LABELS.get(m.name, m.name.title())} for m in Market]
+    # "All markets" first, then alphabetical by label
+    return sorted(markets, key=lambda m: (m["name"] != "ALL", m["label"]))
 
 
 def export_symbol_types() -> list:
@@ -334,21 +380,25 @@ def main():
 
     # Export fields for each screener
     screeners_data = {}
+    shared = {}
     for key, config in SCREENERS.items():
         fields = export_fields(config["fieldEnum"])
+        if config.get("fieldsFrom"):
+            shared[key] = config["fieldsFrom"]
         screeners_data[key] = {
             "name": config["name"],
             "class": config["class"],
             "fieldClass": config["fieldClass"],
             "hasIndex": config["hasIndex"],
-            "hasMarket": config["hasMarket"],
-            "fields": fields,
+            "hasMarket": hasattr(config["screener"], "set_markets"),
+            "fields": [] if key in shared else fields,
             "fieldCount": len(fields)
         }
         print(f"  - {config['name']}: {len(fields)} fields")
 
     # Collect all data
     data = {
+        "defaultMarket": DEFAULT_MARKET.name,
         "screeners": screeners_data,
         "operators": export_filter_operators(),
         "indices": export_index_symbols(),
@@ -364,11 +414,15 @@ def main():
     # Write as JavaScript module
     output_path = Path(__file__).parent.parent / "js" / "field-data.js"
 
+    shared_js = "".join(
+        f"FIELD_DATA.screeners.{key}.fields = FIELD_DATA.screeners.{source}.fields;\n"
+        for key, source in shared.items()
+    )
     js_content = f"""// Auto-generated by export_fields.py - DO NOT EDIT MANUALLY
-// Run: python docs/scripts/export_fields.py
+// Run: python app/scripts/export_fields.py
 
 const FIELD_DATA = {json.dumps(data, indent=2)};
-
+{shared_js}
 // Export for use in other modules
 if (typeof module !== 'undefined' && module.exports) {{
     module.exports = FIELD_DATA;

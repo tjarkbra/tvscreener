@@ -7,6 +7,20 @@ def add_time_interval(field_name, update_mode):
 
 
 def add_historical(field_name, historical=1):
+    """
+    Add a historical lookback offset to a field name.
+
+    TradingView expects the offset bracket on the base field, before the time
+    interval suffix: 'RSI[1]|1W' returns data while 'RSI|1W[1]' returns null.
+    Offsets stack, so 'ADX+DI[1]|1' becomes 'ADX+DI[1][1]|1'.
+
+    :param field_name: Field name, with or without a '|interval' suffix
+    :param historical: Historical offset (default 1)
+    :return: Field name with the offset placed before the interval suffix
+    """
+    if '|' in field_name:
+        base, interval = field_name.split('|', 1)
+        return f"{base}[{historical}]|{interval}"
     return f"{field_name}[{historical}]"
 
 
@@ -22,14 +36,130 @@ def add_rec_to_label(label):
     return f"Reco. {label}"
 
 
-class Field(Enum):
+def _pct_to_factor(pct):
+    """Convert a percent offset (5 -> 1.05, -10 -> 0.9) to the factor TradingView expects."""
+    return round(1 + pct / 100, 10)
 
-    def __init__(self, label, field_name, format_=None, interval=False, historical=False):
+
+class _FilterMethods:
+    """Filter helpers shared by Field, FieldWithInterval and FieldWithHistory."""
+
+    def has(self, values) -> 'FieldCondition':
+        """
+        Check if a set field (e.g. typespecs) contains any of the values.
+
+        Example:
+            >>> StockField.TYPESPECS.has('etf')
+            >>> StockField.TYPESPECS.has(['etf', 'preferred'])
+        """
+        from tvscreener.filter import FieldCondition, FilterOperator
+        return FieldCondition(self, FilterOperator.HAS, values)
+
+    def has_none_of(self, values) -> 'FieldCondition':
+        """
+        Check if a set field (e.g. typespecs) contains none of the values.
+
+        Example:
+            >>> StockField.TYPESPECS.has_none_of(['preferred', 'etn'])
+        """
+        from tvscreener.filter import FieldCondition, FilterOperator
+        return FieldCondition(self, FilterOperator.HAS_NONE_OF, values)
+
+    def match(self, pattern: str) -> 'FieldCondition':
+        """
+        Check if a text field matches a pattern (TradingView's match operation, case-insensitive).
+
+        Example:
+            >>> StockField.DESCRIPTION.match('bank')
+            >>> GovernmentBondField.NAME.match('10Y$')
+        """
+        from tvscreener.filter import FieldCondition, FilterOperator
+        return FieldCondition(self, FilterOperator.MATCH, pattern)
+
+    def is_empty(self) -> 'FieldCondition':
+        """
+        Check if the field has no value.
+
+        Example:
+            >>> StockField.DIVIDENDS_YIELD.is_empty()
+        """
+        from tvscreener.filter import FieldCondition, FilterOperator
+        return FieldCondition(self, FilterOperator.EMPTY, None)
+
+    def not_empty(self) -> 'FieldCondition':
+        """
+        Check if the field has a value.
+
+        Example:
+            >>> StockField.DIVIDENDS_YIELD.not_empty()
+        """
+        from tvscreener.filter import FieldCondition, FilterOperator
+        return FieldCondition(self, FilterOperator.NOT_EMPTY, None)
+
+    def in_day_range(self, start: int, end: int) -> 'FieldCondition':
+        """
+        Check if a date field falls between two day offsets from today (TradingView's day boundaries).
+
+        Example:
+            >>> StockField.UPCOMING_EARNINGS_DATE.in_day_range(0, 7)   # next 7 days
+            >>> StockField.RECENT_EARNINGS_DATE.in_day_range(-7, 0)    # last 7 days
+        """
+        from tvscreener.filter import FieldCondition, FilterOperator
+        return FieldCondition(self, FilterOperator.IN_DAY_RANGE, [start, end])
+
+    def above_pct(self, other, pct: float) -> 'FieldCondition':
+        """
+        Check if the field is more than ``pct`` percent above another field or value.
+
+        Example:
+            >>> StockField.PRICE.above_pct(StockField.SIMPLE_MOVING_AVERAGE_50, 5)  # price > 1.05 * SMA50
+        """
+        from tvscreener.filter import FieldCondition, FilterOperator
+        return FieldCondition(self, FilterOperator.ABOVE_PERCENT, [other, _pct_to_factor(pct)])
+
+    def below_pct(self, other, pct: float) -> 'FieldCondition':
+        """
+        Check if the field is more than ``pct`` percent below another field or value.
+
+        Example:
+            >>> StockField.PRICE.below_pct(StockField.SIMPLE_MOVING_AVERAGE_200, 10)  # price < 0.9 * SMA200
+        """
+        from tvscreener.filter import FieldCondition, FilterOperator
+        return FieldCondition(self, FilterOperator.BELOW_PERCENT, [other, _pct_to_factor(-pct)])
+
+    def within_pct(self, other, low_pct: float, high_pct: float) -> 'FieldCondition':
+        """
+        Check if the field is between ``low_pct`` and ``high_pct`` percent of another field or value.
+
+        Example:
+            >>> StockField.PRICE.within_pct(StockField.ALL_TIME_HIGH, -5, 0)  # within 5% below the all-time high
+        """
+        from tvscreener.filter import FieldCondition, FilterOperator
+        return FieldCondition(self, FilterOperator.IN_RANGE_PERCENT,
+                              [other, _pct_to_factor(low_pct), _pct_to_factor(high_pct)])
+
+    def not_within_pct(self, other, low_pct: float, high_pct: float) -> 'FieldCondition':
+        """
+        Check if the field is outside ``low_pct`` to ``high_pct`` percent of another field or value.
+
+        Example:
+            >>> StockField.PRICE.not_within_pct(StockField.SIMPLE_MOVING_AVERAGE_200, -10, 10)
+        """
+        from tvscreener.filter import FieldCondition, FilterOperator
+        return FieldCondition(self, FilterOperator.NOT_IN_RANGE_PERCENT,
+                              [other, _pct_to_factor(low_pct), _pct_to_factor(high_pct)])
+
+
+class Field(_FilterMethods, Enum):
+
+    def __init__(self, label, field_name, format_=None, interval=False, historical=False, deprecated=False):
         self.label = label
         self.field_name = field_name
         self.format = format_
         self.interval = interval
         self.historical = historical
+        # True when TradingView returns no data for the field (see scripts/generate_fields.py)
+        self.deprecated = deprecated
 
     def has_recommendation(self):
         return self.format == 'recommendation'
@@ -61,7 +191,7 @@ class Field(Enum):
 
         Example:
             >>> StockField.search("market cap")
-            [<StockField.MARKET_CAPITALIZATION: ...>, <StockField.MARKET_CAP_BASIC: ...>, ...]
+            [<StockField.MARKET_CAPITALIZATION: ...>, <StockField.PERF_1W_MARKETCAP: ...>, ...]
         """
         query = query.lower()
         return [f for f in cls if query in f.name.lower() or query in f.label.lower()]
@@ -76,7 +206,7 @@ class Field(Enum):
 
         Example:
             >>> StockField.by_format('recommendation')
-            [<StockField.RSI: ...>, <StockField.MACD: ...>, ...]
+            [<StockField.RELATIVE_STRENGTH_INDEX_14: ...>, <StockField.MACD_LEVEL_12_26: ...>, ...]
         """
         return [f for f in cls if f.format == format_type]
 
@@ -89,7 +219,7 @@ class Field(Enum):
 
         Example:
             >>> StockField.technicals()
-            [<StockField.RSI: ...>, <StockField.MACD: ...>, ...]
+            [<StockField.RELATIVE_STRENGTH_INDEX_14: ...>, <StockField.MACD_LEVEL_12_26: ...>, ...]
         """
         return [f for f in cls if f.interval]
 
@@ -102,7 +232,7 @@ class Field(Enum):
 
         Example:
             >>> StockField.with_history()
-            [<StockField.RSI: ...>, <StockField.VOLUME: ...>, ...]
+            [<StockField.RELATIVE_STRENGTH_INDEX_14: ...>, <StockField.VOLUME: ...>, ...]
         """
         return [f for f in cls if f.historical]
 
@@ -115,9 +245,20 @@ class Field(Enum):
 
         Example:
             >>> StockField.recommendations()
-            [<StockField.RSI: ...>, <StockField.STOCH_K: ...>, ...]
+            [<StockField.RELATIVE_STRENGTH_INDEX_14: ...>, <StockField.STOCHASTIC_PERCENTK_14_3_3: ...>, ...]
         """
         return [f for f in cls if f.format == 'recommendation']
+
+    def accepts_interval(self) -> bool:
+        """
+        Whether with_interval() can be applied to this field.
+
+        Fields whose field name already carries a time interval (e.g. 'EMA12|5')
+        are timeframe variants and cannot take another one.
+
+        :return: True if the field supports intervals and has none yet
+        """
+        return bool(self.interval) and '|' not in self.field_name
 
     def with_interval(self, interval: str) -> 'FieldWithInterval':
         """
@@ -127,14 +268,16 @@ class Field(Enum):
 
         :param interval: Time interval string
         :return: FieldWithInterval wrapper
-        :raises ValueError: If field does not support intervals
+        :raises ValueError: If field does not support intervals or already has one
 
         Example:
-            >>> StockField.RSI.with_interval('1H')
+            >>> StockField.RELATIVE_STRENGTH_INDEX_14.with_interval('1H')
             FieldWithInterval(RSI, interval='1H')
         """
         if not self.interval:
             raise ValueError(f"{self.name} does not support time intervals")
+        if not self.accepts_interval():
+            raise ValueError(f"{self.name} already has a time interval ({self.field_name})")
         return FieldWithInterval(self, interval)
 
     def with_history(self, periods: int = 1) -> 'FieldWithHistory':
@@ -200,7 +343,7 @@ class Field(Enum):
         or standard enum equality for Field-to-Field comparisons.
 
         Example:
-            >>> StockField.SECTOR == 'Technology'
+            >>> StockField.SECTOR == 'Electronic Technology'
         """
         # For enum-to-enum comparison, use standard Enum equality
         if isinstance(other, Field):
@@ -217,7 +360,7 @@ class Field(Enum):
         or standard enum inequality for Field-to-Field comparisons.
 
         Example:
-            >>> StockField.SECTOR != 'Technology'
+            >>> StockField.SECTOR != 'Electronic Technology'
         """
         # For enum-to-enum comparison, use standard Enum inequality
         if isinstance(other, Field):
@@ -258,7 +401,7 @@ class Field(Enum):
         Check if field value is in a list of values.
 
         Example:
-            >>> StockField.SECTOR.isin(['Technology', 'Healthcare'])
+            >>> StockField.SECTOR.isin(['Electronic Technology', 'Health Technology'])
             >>> StockField.EXCHANGE.isin([Exchange.NASDAQ, Exchange.NYSE])
         """
         from tvscreener.filter import FieldCondition, FilterOperator
@@ -280,7 +423,7 @@ class FieldCondition:
     pass
 
 
-class FieldWithInterval:
+class FieldWithInterval(_FilterMethods):
     """
     Wrapper for a Field with a time interval modifier.
 
@@ -301,7 +444,11 @@ class FieldWithInterval:
         self.format = field.format
         self.interval = True
         self.historical = field.historical
+        self.deprecated = field.deprecated
         self.name = f"{field.name}_{interval}"  # For repr in FieldCondition
+
+    def has_recommendation(self):
+        return self.field.has_recommendation()
 
     def __repr__(self):
         return f"FieldWithInterval({self.field.name}, interval='{self._interval}')"
@@ -358,7 +505,7 @@ class FieldWithInterval:
         return FieldCondition(self, FilterOperator.NOT_IN_RANGE, values)
 
 
-class FieldWithHistory:
+class FieldWithHistory(_FilterMethods):
     """
     Wrapper for a Field with historical lookback.
 
@@ -374,12 +521,16 @@ class FieldWithHistory:
         """
         self.field = field
         self.periods = periods
-        self.field_name = f"{field.field_name}[{periods}]"
+        self.field_name = add_historical(field.field_name, periods)
         self.label = f"Prev. {field.label}" if periods == 1 else f"{field.label} [{periods}]"
         self.format = field.format
         self.interval = field.interval
         self.historical = True
+        self.deprecated = field.deprecated
         self.name = f"{field.name}_history_{periods}"  # For repr in FieldCondition
+
+    def has_recommendation(self):
+        return self.field.has_recommendation()
 
     def __repr__(self):
         return f"FieldWithHistory({self.field.name}, periods={self.periods})"
@@ -457,13 +608,40 @@ class Rating(Enum):
         self.label = label
 
     def __contains__(self, item):
-        return self.min <= item <= self.max
+        """
+        Test whether a value falls in this band.
+
+        Every band is open at the edge facing NEUTRAL, and NEUTRAL itself is
+        closed on both ends, which is what TradingView specifies:
+
+            [-1.0 <= value <  -0.5]  Strong Sell
+            [-0.5 <= value <  -0.1]  Sell
+            [-0.1 <= value <=  0.1]  Neutral
+            ( 0.1 <  value <=  0.5]  Buy
+            ( 0.5 <  value <=  1.0]  Strong Buy
+
+        Closing both ends would make the bands overlap, and a value sitting
+        exactly on a cut point would resolve to the more bullish band.
+        Values outside [-1.0, 1.0] belong to no band, so find() reports them
+        as UNKNOWN.
+        """
+        if self is Rating.NEUTRAL:
+            return self.min <= item <= self.max
+        if self is Rating.BUY or self is Rating.STRONG_BUY:
+            return self.min < item <= self.max
+        return self.min <= item < self.max
 
     def range(self):
         return [self.min, self.max]
 
     @classmethod
     def find(cls, value: float):
+        """
+        Return the band a value belongs to, or UNKNOWN if it belongs to none.
+
+        :param value: Rating value, normally within [-1.0, 1.0]
+        :return: Matching Rating member, or Rating.UNKNOWN
+        """
         if value is not None:
             for rating in Rating:
                 if value in rating:

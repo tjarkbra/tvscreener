@@ -146,7 +146,7 @@ ss.where(macd_4h > 0)
 macd_1h = StockField.MACD_LEVEL_12_26.with_interval('60')
 ss.where(macd_1h > 0)
 
-# Note: Field-to-field comparisons (e.g., MACD > Signal) are NOT supported.
+# Field-to-field filters also work in where(), e.g. MACD > signal line.
 # Retrieve data and filter with pandas instead.
 
 df = ss.get()
@@ -188,6 +188,13 @@ Fundamental fields do NOT support intervals:
 - P/E, P/B, Market Cap (these are point-in-time values)
 - Revenue, Earnings, Margins
 - Dividend data
+
+Some fields already include a timeframe in their name, for example `StockField.EMA12_5` (`EMA12|5`, EMA 12 on 5 minutes). They cannot take another interval: `with_interval()` raises `ValueError`. Use `accepts_interval()` to check a field:
+
+```python
+StockField.RELATIVE_STRENGTH_INDEX_14.accepts_interval()  # True
+StockField.EMA12_5.accepts_interval()                     # False
+```
 
 ## Best Practices
 

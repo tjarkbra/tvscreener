@@ -9,7 +9,8 @@ from __future__ import annotations
 import tvscreener as tvs
 from tvscreener import (
     StockField, CryptoField, ForexField, BondField, FuturesField, CoinField,
-    FilterOperator
+    EconomicsField, IndexField, GovernmentBondField,
+    FilterOperator, FieldCondition, ConditionGroup
 )
 import pandas as pd
 from typing import TYPE_CHECKING
@@ -32,7 +33,16 @@ FILTER_OP_MAP = {
     "crosses": FilterOperator.CROSSES,
     "crosses_up": FilterOperator.CROSSES_UP,
     "crosses_down": FilterOperator.CROSSES_DOWN,
+    "has": FilterOperator.HAS,
+    "has_none_of": FilterOperator.HAS_NONE_OF,
+    "empty": FilterOperator.EMPTY,
+    "not_empty": FilterOperator.NOT_EMPTY,
+    "in_day_range": FilterOperator.IN_DAY_RANGE,
 }
+
+# Percent operators: value is [other, pct] or [other, low_pct, high_pct],
+# where other is a field name or a number
+PCT_OPS = {"above_pct", "below_pct", "within_pct", "not_within_pct"}
 
 # Mapping from asset type to field class and screener class
 ASSET_CONFIG = {
@@ -42,6 +52,10 @@ ASSET_CONFIG = {
     "bond": {"field_class": BondField, "screener_class": tvs.BondScreener},
     "futures": {"field_class": FuturesField, "screener_class": tvs.FuturesScreener},
     "coin": {"field_class": CoinField, "screener_class": tvs.CoinScreener},
+    "etf": {"field_class": StockField, "screener_class": tvs.ETFScreener},
+    "economics": {"field_class": EconomicsField, "screener_class": tvs.EconomicsScreener},
+    "index": {"field_class": IndexField, "screener_class": tvs.IndexScreener},
+    "government_bond": {"field_class": GovernmentBondField, "screener_class": tvs.GovernmentBondScreener},
 }
 
 
@@ -57,7 +71,7 @@ def get_field_enum(field_name: str, asset_type: str = "stock"):
         Field enum or None if not found
     """
     field_name = field_name.upper().replace(" ", "_")
-    config = ASSET_CONFIG.get(asset_type, ASSET_CONFIG["stock"])
+    config = _asset_config(asset_type)
     field_class = config["field_class"]
 
     # Try direct attribute access first
@@ -88,7 +102,7 @@ def search_fields(
     Returns:
         List of matching field info dicts with 'name', 'display_name', 'is_technical'
     """
-    config = ASSET_CONFIG.get(asset_type, ASSET_CONFIG["stock"])
+    config = _asset_config(asset_type)
     field_class = config["field_class"]
 
     results = field_class.search(query)[:limit]
@@ -116,7 +130,7 @@ def get_field_categories(asset_type: str = "stock") -> dict[str, list[str]]:
     Returns:
         Dict mapping category names to lists of field names
     """
-    config = ASSET_CONFIG.get(asset_type, ASSET_CONFIG["stock"])
+    config = _asset_config(asset_type)
     field_class = config["field_class"]
 
     category_keywords = [
@@ -134,13 +148,77 @@ def get_field_categories(asset_type: str = "stock") -> dict[str, list[str]]:
     return categories
 
 
+_LEAF_KEYS = {"field", "op", "value"}
+_NO_VALUE_OPS = {"empty", "not_empty"}
+
+
+def _asset_config(asset_type: str):
+    if asset_type not in ASSET_CONFIG:
+        raise ValueError(f"Unknown asset_type {asset_type!r}; use one of {sorted(ASSET_CONFIG)}")
+    return ASSET_CONFIG[asset_type]
+
+
+def _require_field(name, asset_type: str, role: str = "field"):
+    field = get_field_enum(name, asset_type) if isinstance(name, str) and name else None
+    if field is None:
+        raise ValueError(f"Unknown {role} {name!r} for {asset_type}; use discover_fields to find field names")
+    return field
+
+
+def build_condition(spec: dict[str, Any], asset_type: str = "stock"):
+    """
+    Build a FieldCondition or ConditionGroup from a filter dict.
+
+    A filter is either {"field": str, "op": str, "value": any}, or a group
+    {"or": [filters...]} / {"and": [filters...]} that can be nested.
+
+    :raises ValueError: On unknown keys, fields or operators, or a missing op or value
+    """
+    if not isinstance(spec, dict):
+        raise ValueError(f"A filter must be an object, got {spec!r}")
+    groups = [k for k in ("or", "and") if k in spec]
+    if groups:
+        if len(spec) != 1:
+            raise ValueError(f"A group has a single key, 'or' or 'and': {spec!r}")
+        parts = spec[groups[0]]
+        if not isinstance(parts, list) or not parts:
+            raise ValueError(f"'{groups[0]}' needs a non-empty list of filters")
+        conditions = [build_condition(part, asset_type) for part in parts]
+        return conditions[0] if len(conditions) == 1 else ConditionGroup(groups[0], conditions)
+
+    unknown = set(spec) - _LEAF_KEYS
+    if unknown:
+        raise ValueError(f"Unknown filter keys {sorted(unknown)} in {spec!r}; "
+                         f"a filter has 'field', 'op' and 'value' (or is an 'or' / 'and' group)")
+    if "field" not in spec or "op" not in spec:
+        raise ValueError(f"A filter needs 'field' and 'op': {spec!r}")
+    field = _require_field(spec["field"], asset_type)
+    op = spec["op"]
+    if op not in FILTER_OP_MAP and op not in PCT_OPS:
+        raise ValueError(f"Unknown op {op!r}; use one of {sorted(FILTER_OP_MAP) + sorted(PCT_OPS)}")
+    if op not in _NO_VALUE_OPS and "value" not in spec:
+        raise ValueError(f"Op {op!r} needs a 'value': {spec!r}")
+    value = spec.get("value")
+
+    if op in PCT_OPS:
+        if not isinstance(value, list) or len(value) not in (2, 3):
+            raise ValueError(f"Op {op!r} needs value [field_or_number, pct] or [field_or_number, low_pct, high_pct]")
+        other = value[0]
+        if isinstance(other, str):
+            other = _require_field(other, asset_type)
+        return getattr(field, op)(other, *value[1:])
+
+    return FieldCondition(field, FILTER_OP_MAP[op], value)
+
+
 def custom_screen(
     asset_type: str = "stock",
     select_fields: list[str] | None = None,
     filters: list[dict[str, Any]] | None = None,
     sort_by: str | None = None,
     ascending: bool = False,
-    limit: int = 25
+    limit: int = 25,
+    preset: str | None = None
 ) -> pd.DataFrame:
     """
     Flexible screener with custom fields and filters.
@@ -148,49 +226,38 @@ def custom_screen(
     Args:
         asset_type: Asset type
         select_fields: List of field names to return
-        filters: List of filter dicts: {"field": str, "op": str, "value": any}
+        filters: List of filter dicts: {"field": str, "op": str, "value": any},
+                 or groups {"or": [...]} / {"and": [...]} (nestable)
+
+    Raises:
+        ValueError: On an unknown asset type, field, filter key or operator
         sort_by: Field name to sort by
         ascending: Sort direction
         limit: Maximum results
+        preset: TradingView preset name (stock and etf only), e.g. "gainers"
 
     Returns:
         DataFrame with query results
     """
-    config = ASSET_CONFIG.get(asset_type, ASSET_CONFIG["stock"])
+    config = _asset_config(asset_type)
     screener = config["screener_class"]()
+    if preset:
+        if not hasattr(screener, "set_preset"):
+            raise ValueError(f"Presets are only available for stock and etf, not {asset_type}")
+        screener.set_preset(preset)
 
     # Select fields
     if select_fields:
-        fields_to_select = []
-        for fname in select_fields:
-            field = get_field_enum(fname, asset_type)
-            if field:
-                fields_to_select.append(field)
-        if fields_to_select:
-            screener.select(*fields_to_select)
+        screener.select(*[_require_field(name, asset_type) for name in select_fields])
 
-    # Apply filters
-    if filters:
-        for f in filters:
-            field_name = f.get("field")
-            op = f.get("op", ">=")
-            value = f.get("value")
-
-            field = get_field_enum(field_name, asset_type)
-            if not field:
-                continue
-
-            filter_op = FILTER_OP_MAP.get(op)
-            if not filter_op:
-                continue
-
-            screener.where(field, filter_op, value)
+    # Apply filters (all checked before the request)
+    conditions = [build_condition(f, asset_type) for f in filters or []]
+    for condition in conditions:
+        screener.where(condition)
 
     # Apply sorting
     if sort_by:
-        sort_field = get_field_enum(sort_by, asset_type)
-        if sort_field:
-            screener.sort_by(sort_field, ascending=ascending)
+        screener.sort_by(_require_field(sort_by, asset_type, "sort_by field"), ascending=ascending)
 
     df = screener.get()
     return df.head(limit)
